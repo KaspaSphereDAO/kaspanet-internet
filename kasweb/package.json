@@ -1,0 +1,16 @@
+{
+  "name": "kaspanet",
+  "version": "1.0.0",
+  "description": "RAM-only decentralized web client for .kas domains (KNS on Kaspa + IPFS)",
+  "main": "kaspanet.js",
+  "license": "AGPL-3.0-or-later",
+  "author": "KaspaSphere DAO",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KaspaSphereDAO/kaspanet.git"
+  },
+  "scripts": {
+    "start": "node kaspanet.js",
+    "test": "node mock_test.js"
+  }
+}
