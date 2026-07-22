@@ -1,4 +1,4 @@
-# Kaspanet
+# Kaspanet© Internet
 
 ## License
 
