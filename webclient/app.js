@@ -145,6 +145,20 @@ async function goHome() {
   location.hash = "";
   showPanel(`<div class="card"><span class="dim">Checking network&hellip;</span></div>`);
   let badge;
+  if (EMBEDDED) {
+    // Inside kaspanet.exe the sealed CSP blocks direct KNS calls (by design).
+    // Ask the local proxy's same-origin /status endpoint instead.
+    try {
+      const r = await (await fetch("/status", { signal: AbortSignal.timeout(10000) })).json();
+      if (r.offline) return showPanel(OFFLINE_HTML);
+      badge = r.live
+        ? `<span class="dot ok">&#9679;</span> <code>${esc(r.webclient || HOME_KAS)}</code> pulling live from IPFS &mdash; you are on the hosted client inside kaspanet (${esc(r.mode)} mode)`
+        : `<span class="dot mid">&#9679;</span> <code>${esc(r.webclient || HOME_KAS)}</code> not live: ${esc(r.detail)}`;
+    } catch (e) {
+      badge = `<span class="dot mid">&#9679;</span> local status unavailable`;
+    }
+    return renderHome(badge);
+  }
   try {
     const entry = await resolveKas(HOME_KAS);
     if (entry.ptr) {
@@ -158,6 +172,10 @@ async function goHome() {
     if (isNetErr(e)) return showPanel(OFFLINE_HTML);
     badge = `<span class="dot mid">&#9679;</span> <code>${esc(HOME_KAS)}</code> not live: ${esc(e.message)}`;
   }
+  renderHome(badge);
+}
+
+function renderHome(badge) {
   showPanel(`
   <h1>Kaspa<span style="color:var(--accent)">net</span> Browser</h1>
   <p class="dim">Zero-install client for the .kas decentralized web &mdash; KNS naming on Kaspa, content over IPFS. Runs entirely in your browser; no server, no account.</p>
