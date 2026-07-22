@@ -4,7 +4,7 @@
 
 This project is licensed under the GNU Affero General Public License v3.0
 (AGPL-3.0) — see the [LICENSE](LICENSE) file for details. Copyright © 2026
-KaspaSphere DAO. Source code: https://github.com/KaspaSphereDAO/kaspanet
+KaspaSphere DAO. Source code: https://github.com/KaspaSphereDAO/kaspanet-internet
 
 Because the AGPL covers network use, every user-facing component displays a
 prominent "Source Code" link pointing to the repository above, and the desktop
