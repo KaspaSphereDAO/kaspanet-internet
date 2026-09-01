@@ -25,7 +25,22 @@
  */
 
 const KNS_API    = "https://api.knsdomains.org/mainnet";
-const GATEWAY    = "https://dweb.link";   // redirects path->subdomain per-CID origins
+
+// NOTE (Aug 25 2026): ipfs.io and dweb.link began redirecting 100% of
+// browser traffic to a service-worker gateway (inbrowser.link) instead of
+// serving content directly. Service workers can't register inside our
+// sandboxed <iframe> — intentionally, since that's what keeps a random
+// .kas site from touching this page's own origin — so sites loaded through
+// dweb.link now just hang on the inbrowser.link bootstrap screen instead of
+// rendering. Raw ipfs:// pointer resolution via KNS is unaffected; it's
+// specifically the dweb.link/ipfs.io *gateway hop* that broke.
+// Use gateways that still serve plain content, with manual fallbacks the
+// user can cycle through if one is slow/down.
+// https://discuss.ipfs.tech/t/changes-to-ipfs-io-and-dweb-link-gateways/20328
+const GATEWAYS   = ["https://w3s.link", "https://gateway.pinata.cloud", "https://4everland.io", "https://nftstorage.link"];
+let   gwIndex    = 0;
+const GATEWAY    = () => GATEWAYS[gwIndex % GATEWAYS.length];
+
 const HOME_KAS   = "webclient.kas";
 const CANONICAL  = "https://kaspanet.online";
 const SOURCE_URL = "https://github.com/KaspaSphereDAO/kaspanet";
@@ -40,6 +55,10 @@ const resolveCache = new Map(); // domain -> {at, entry}
 // Running inside kaspanet.exe? Delegate navigation to the local proxy
 // (it enforces RAM-only + sealed-mode CSP, which a plain page cannot).
 const EMBEDDED = location.hostname === "127.0.0.1" || location.hostname === "localhost";
+
+// Whatever's currently loaded in the iframe, so "try another mirror" can
+// reload the same site through the next gateway in the list.
+let currentSite = null; // {kind, cid, base}
 
 function parsePointer(s) {
   if (!s || typeof s !== "string") return null;
@@ -80,8 +99,31 @@ async function resolveKas(domain) {
 
 /* ---------------- UI ---------------- */
 
-function showPanel(html) { $("frame").style.display = "none"; $("panel").style.display = "block"; $("content").innerHTML = html; }
-function showFrame(url)  { $("panel").style.display = "none"; const f = $("frame"); f.style.display = "block"; f.src = url; }
+function showPanel(html) {
+  currentSite = null;
+  $("frame").style.display = "none";
+  $("mirrorBar").style.display = "none";
+  $("panel").style.display = "block";
+  $("content").innerHTML = html;
+}
+function showFrame(url) {
+  $("panel").style.display = "none";
+  const f = $("frame");
+  f.style.display = "block";
+  f.src = url;
+  $("mirrorBar").style.display = "flex";
+}
+// Load a .kas/IPFS site into the frame, remembering it so the mirror button
+// can retry through the next gateway without re-resolving KNS.
+function openSite(kind, cid, base) {
+  currentSite = { kind, cid, base };
+  showFrame(`${GATEWAY()}/${kind}/${cid}${base}/`);
+}
+function retryMirror() {
+  if (!currentSite) return;
+  gwIndex++;
+  openSite(currentSite.kind, currentSite.cid, currentSite.base);
+}
 
 const OFFLINE_HTML = `<div class="card err"><b><span class="dot bad">&#9679;</span> Offline</b>
   <p class="dim">The KNS indexer can't be reached. Check your Wi-Fi / internet connection and try again.</p>
@@ -120,7 +162,7 @@ async function openKas(domain) {
     const entry = await resolveKas(domain);
     if (entry.card) return showPanel(knsCard(domain, entry.card, entry.owner));
     const { kind, cid, base } = entry.ptr;
-    showFrame(`${GATEWAY}/${kind}/${cid}${base}/`);
+    openSite(kind, cid, base);
   } catch (e) {
     showPanel(isNetErr(e) ? OFFLINE_HTML
       : `<div class="card err"><b>${esc(domain)}</b> &mdash; ${esc(e.message)}<p><a href="#" data-home>&larr; home</a></p></div>`);
@@ -133,7 +175,7 @@ function go(input) {
   $("addr").value = d;
   if (EMBEDDED) { location.href = "/go?d=" + encodeURIComponent(d); return; }
   const ptr = parsePointer(d);
-  if (ptr) return showFrame(`${GATEWAY}/${ptr.kind}/${ptr.cid}${ptr.base}/`);
+  if (ptr) return openSite(ptr.kind, ptr.cid, ptr.base);
   const bare = d.replace(/^kas:\/\//i, "").split(/[/?#]/)[0];
   if (/\.kas$/i.test(bare)) { location.hash = bare.toLowerCase(); return openKas(bare.toLowerCase()); }
   if (/^https?:\/\/\S+$/i.test(d)) return void window.open(d, "_blank", "noopener");
@@ -164,7 +206,7 @@ async function goHome() {
     if (entry.ptr) {
       const onIt = location.hostname.includes(entry.ptr.cid);
       badge = `<span class="dot ok">&#9679;</span> <code>${esc(HOME_KAS)}</code> pulling live from IPFS`
-        + (onIt ? " &mdash; you are on the live decentralized copy" : ` &mdash; <a href="${GATEWAY}/ipfs/${esc(entry.ptr.cid)}/">open decentralized copy</a>`);
+        + (onIt ? " &mdash; you are on the live decentralized copy" : ` &mdash; <a href="${GATEWAY()}/ipfs/${esc(entry.ptr.cid)}/">open decentralized copy</a>`);
     } else {
       badge = `<span class="dot mid">&#9679;</span> <code>${esc(HOME_KAS)}</code> registered but no ipfs:// pointer yet`;
     }
@@ -198,6 +240,7 @@ addEventListener("DOMContentLoaded", () => {
   $("goBtn").addEventListener("click", () => go());
   $("brand").addEventListener("click", () => goHome());
   $("addr").addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+  $("mirrorRetry").addEventListener("click", e => { e.preventDefault(); retryMirror(); });
   // delegated handler for "home / retry" links rendered into the result panel
   $("content").addEventListener("click", e => {
     const a = e.target.closest("a[data-home]");
