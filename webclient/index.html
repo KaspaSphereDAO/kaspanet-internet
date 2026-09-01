@@ -40,6 +40,7 @@
   code { background:#151a23; padding:2px 6px; border-radius:4px; word-break:break-all }
   .dot { font-size:11px } .ok{color:var(--accent)} .bad{color:#e05561} .mid{color:#d7a021}
   h1 { font-weight:600 }
+  #mirrorBar { position:absolute; bottom:12px; right:12px; background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:6px 12px; font-size:12px; align-items:center; gap:6px; z-index:5; display:none; box-shadow:0 4px 14px rgba(0,0,0,.35) }
 </style>
 </head>
 <body>
@@ -51,6 +52,9 @@
 <div id="view">
   <iframe id="frame" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
   <div id="panel"><div class="inner" id="content"></div></div>
+  <div id="mirrorBar">
+    <span class="dim">Site stuck loading?</span> <a href="#" id="mirrorRetry">Try another mirror</a>
+  </div>
 </div>
 
 <script src="./app.js"></script>
