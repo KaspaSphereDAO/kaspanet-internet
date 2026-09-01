@@ -45,8 +45,17 @@ const { execFile } = require("child_process");
 /* ------------------------------------------------------------------ config */
 
 const KNS_API = process.env.KNS_API || "https://api.knsdomains.org/mainnet";
+
+// NOTE (Aug 25 2026): ipfs.io and dweb.link now redirect 100% of traffic to
+// a service-worker gateway (inbrowser.link) instead of serving raw bytes
+// over plain HTTP. That breaks this Node client, which needs classic HTTP
+// gateway responses, not a browser-side service worker. Default to
+// gateways that still behave as plain HTTP gateways. Raw ipfs:// pointer
+// resolution via KNS is unaffected — it's specifically the dweb.link/
+// ipfs.io *gateway hop* that broke.
+// https://discuss.ipfs.tech/t/changes-to-ipfs-io-and-dweb-link-gateways/20328
 const GATEWAYS = (process.env.GATEWAYS ||
-  "https://ipfs.io,https://dweb.link,https://gateway.pinata.cloud"
+  "https://gateway.pinata.cloud,https://w3s.link,https://4everland.io,https://nftstorage.link"
 ).split(",").map(s => s.trim()).filter(Boolean);
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;   // 25 MB per file
@@ -113,7 +122,15 @@ function fetchRaw(url, maxBytes, redirects) {
     const req = mod.get(u, { headers: { "User-Agent": "kaspanet/0.1", "Accept": "*/*" } }, res => {
       if (res.statusCode >= 301 && res.statusCode <= 308 && res.headers.location && redirects > 0) {
         res.resume();
-        return resolve(fetchRaw(new URL(res.headers.location, u).href, maxBytes, redirects - 1));
+        let next;
+        try { next = new URL(res.headers.location, u); } catch (e) { return reject(new Error("bad redirect target")); }
+        // ipfs.io/dweb.link now bounce everything to inbrowser.link's
+        // service-worker gateway — that page has no raw bytes for a
+        // backend client, so treat it as a dead gateway, not a valid hop.
+        if (/(^|\.)inbrowser\.link$/i.test(next.hostname)) {
+          return reject(new Error("gateway redirected to inbrowser.link (service-worker only, no raw bytes for backend clients)"));
+        }
+        return resolve(fetchRaw(next.href, maxBytes, redirects - 1));
       }
       if (res.statusCode !== 200) {
         res.resume();
