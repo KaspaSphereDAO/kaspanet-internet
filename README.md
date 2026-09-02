@@ -55,6 +55,8 @@ upload to IPFS. See `kasparty-ipfs/PUBLISH.md`.
 
 The `.exe` is a Node.js SEA. To rebuild from `kasweb/kaspanet.js`:
 
+HOW TO LAUNCH DESKTOP CLIENT:  MAKE SURE TO DOWNLOAD WHOLE GITHUB REPO, UNZIP FILE, THEN GOTO kaspanet-internet-main -> webclient -> index.html to Run!
+
 ```
 node --experimental-sea-config sea-config.json      # produces sea-prep.blob
 # copy a node.exe, then inject:
