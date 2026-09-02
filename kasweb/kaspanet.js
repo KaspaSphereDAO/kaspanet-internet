@@ -54,8 +54,11 @@ const KNS_API = process.env.KNS_API || "https://api.knsdomains.org/mainnet";
 // resolution via KNS is unaffected — it's specifically the dweb.link/
 // ipfs.io *gateway hop* that broke.
 // https://discuss.ipfs.tech/t/changes-to-ipfs-io-and-dweb-link-gateways/20328
+// NOTE: gateway.pinata.cloud is deliberately excluded — Pinata's public
+// gateway refuses to serve HTML content on the free tier for any CID.
+// Fine as a pinning provider, unusable here as a browsing gateway.
 const GATEWAYS = (process.env.GATEWAYS ||
-  "https://gateway.pinata.cloud,https://w3s.link,https://4everland.io,https://nftstorage.link"
+  "https://w3s.link,https://4everland.io,https://nftstorage.link,https://trustless-gateway.link"
 ).split(",").map(s => s.trim()).filter(Boolean);
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;   // 25 MB per file
