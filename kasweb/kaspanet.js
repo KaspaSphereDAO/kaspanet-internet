@@ -54,12 +54,57 @@ const KNS_API = process.env.KNS_API || "https://api.knsdomains.org/mainnet";
 // resolution via KNS is unaffected — it's specifically the dweb.link/
 // ipfs.io *gateway hop* that broke.
 // https://discuss.ipfs.tech/t/changes-to-ipfs-io-and-dweb-link-gateways/20328
-// NOTE: gateway.pinata.cloud is deliberately excluded — Pinata's public
-// gateway refuses to serve HTML content on the free tier for any CID.
-// Fine as a pinning provider, unusable here as a browsing gateway.
+//
+// NOTE (Sep 1 2026): list re-derived from the IPFS Foundation's own
+// public-gateway-checker registry (github.com/ipfs/public-gateway-checker)
+// after w3s.link started intermittently surfacing the same dweb.link
+// service-worker redirect (ipfs/public-gateway-checker v1.23.1 release
+// notes: "remove w3s.link (redirects to dweb.link)" — though the registry's
+// gateways.json still lists it at time of writing, so behavior may be
+// inconsistent). trustless-gateway.link is IPFS-Foundation-operated
+// (distinct from ipfs.io/dweb.link) and wasn't named in the Aug 25 2026
+// service-worker migration post, making it the most likely-stable primary
+// right now. gateway.pinata.cloud and 4everland.io are deliberately
+// excluded — both block HTML content on their public/free tiers for
+// anti-phishing reasons, so they structurally cannot serve a .kas site's
+// index.html. nftstorage.link has also been dropped: it no longer appears
+// in the maintained public-gateway-checker registry at all, consistent
+// with NFT.storage's broader 2024 service wind-down. w3s.link is kept only
+// as a last-resort rotation entry given its mixed status rather than
+// removed outright.
+// NOTE (this build): GATEWAYS is a list of bare hosts (not full https://
+// URLs) so gatewayFetchUrl() below can build a subdomain-style URL per CID,
+// mirroring the browser client (webclient/app.js) exactly. If you set the
+// GATEWAYS env var yourself, use bare hosts too, e.g.
+// "w3s.link,4everland.io" — not "https://...".
+//
+// This exact list (order included) is confirmed working end-to-end against
+// a live .kas site as of Sep 1 2026. A later attempt to reorder this based
+// on gateway registry docs alone (trustless-gateway.link / ipfs.ecolatam.com
+// first) was NOT verified against real traffic and broke resolution in
+// practice — don't reorder this list again without testing against a real
+// CID first.
 const GATEWAYS = (process.env.GATEWAYS ||
-  "https://w3s.link,https://4everland.io,https://nftstorage.link,https://trustless-gateway.link"
+  "w3s.link,4everland.io,nftstorage.link,trustless-gateway.link"
 ).split(",").map(s => s.trim()).filter(Boolean);
+
+// Same DNS-label-safe CIDv1 check as the browser client.
+const CIDV1_RE = /^ba[a-z2-7]{20,}$/;
+
+// Build the URL used to fetch a file from a given gateway host: subdomain
+// style (https://<cid>.<kind>.<host>/path) for CIDv1, path-style
+// (https://<host>/<kind>/<cid>/path) fallback for legacy CIDv0. Unlike the
+// browser client's identical gatewayUrl(), this isn't fixing an
+// X-Frame-Options problem — Node's https module fetches raw bytes directly
+// and never frames or renders anything, so that header is a no-op here.
+// This exists purely to keep both clients hitting gateways the same way
+// (some gateway operators serve/behave differently on subdomain vs path
+// routes), and changes nothing about the RAM-only cache, sealed CSP, or
+// no-disk-writes model below.
+function gatewayFetchUrl(host, kind, cid, path) {
+  if (CIDV1_RE.test(cid)) return `https://${cid}.${kind}.${host}${path}`;
+  return `https://${host}/${kind}/${cid}${path}`;
+}
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;   // 25 MB per file
 const MAX_CACHE_BYTES = 100 * 1024 * 1024; // 100 MB total RAM cache
@@ -248,7 +293,7 @@ async function fetchSiteFile(kind, cid, path) {
   let lastErr;
   for (const gw of GATEWAYS) {
     try {
-      const r = await fetchRaw(gw + "/" + kind + "/" + cid + path, MAX_FILE_BYTES);
+      const r = await fetchRaw(gatewayFetchUrl(gw, kind, cid, path), MAX_FILE_BYTES);
       cachePut(key, r.buf, r.type);
       return r;
     } catch (e) { lastErr = e; }
