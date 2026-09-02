@@ -50,6 +50,13 @@ const KNS_API    = "https://api.knsdomains.org/mainnet";
 // style gives each CID its own origin, so gateways generally don't lock it
 // down the same way, and it's also what actually gives us real per-site
 // origin isolation (the comment above always intended this).
+//
+// This exact list (order included) is confirmed working end-to-end against
+// a live .kas site as of Sep 1 2026: w3s.link resolves subdomain-style URLs
+// correctly for CIDv1. A later attempt to reorder this based on gateway
+// registry docs alone (trustless-gateway.link / ipfs.ecolatam.com first)
+// was NOT verified against real traffic and broke resolution in practice —
+// don't reorder this list again without testing against a real CID first.
 const GATEWAYS   = ["w3s.link", "4everland.io", "nftstorage.link", "trustless-gateway.link"];
 let   gwIndex    = 0;
 const GATEWAY    = () => GATEWAYS[gwIndex % GATEWAYS.length];
