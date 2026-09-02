@@ -37,7 +37,7 @@ const KNS_API    = "https://api.knsdomains.org/mainnet";
 // Use gateways that still serve plain content, with manual fallbacks the
 // user can cycle through if one is slow/down.
 // https://discuss.ipfs.tech/t/changes-to-ipfs-io-and-dweb-link-gateways/20328
-const GATEWAYS   = ["https://w3s.link", "https://gateway.pinata.cloud", "https://4everland.io", "https://nftstorage.link"];
+const GATEWAYS   = ["https://w3s.link", "https://4everland.io", "https://nftstorage.link", "https://trustless-gateway.link"];
 let   gwIndex    = 0;
 const GATEWAY    = () => GATEWAYS[gwIndex % GATEWAYS.length];
 
