@@ -37,7 +37,20 @@ const KNS_API    = "https://api.knsdomains.org/mainnet";
 // Use gateways that still serve plain content, with manual fallbacks the
 // user can cycle through if one is slow/down.
 // https://discuss.ipfs.tech/t/changes-to-ipfs-io-and-dweb-link-gateways/20328
-const GATEWAYS   = ["https://w3s.link", "https://4everland.io", "https://nftstorage.link", "https://trustless-gateway.link"];
+//
+// NOTE (this build): these are gateway *hosts*, not full path-style URLs.
+// gatewayUrl() below builds a subdomain-style URL per CID
+// (https://<cid>.ipfs.<host>/) instead of path-style
+// (https://<host>/ipfs/<cid>/). Path-style puts every framed site on the
+// *same* origin as the gateway itself, and several public gateways send
+// `X-Frame-Options: sameorigin` on that form as anti-clickjacking — which
+// Chrome then refuses to render inside our <iframe> at all (this is what
+// the "broken document" icon / "Refused to display ... in a frame because
+// it set 'X-Frame-Options' to 'sameorigin'" console error was). Subdomain
+// style gives each CID its own origin, so gateways generally don't lock it
+// down the same way, and it's also what actually gives us real per-site
+// origin isolation (the comment above always intended this).
+const GATEWAYS   = ["w3s.link", "4everland.io", "nftstorage.link", "trustless-gateway.link"];
 let   gwIndex    = 0;
 const GATEWAY    = () => GATEWAYS[gwIndex % GATEWAYS.length];
 
@@ -48,6 +61,10 @@ const BLOCKED_DOMAINS = new Set([]);
 const BLOCKED_CIDS = new Set([]);
 
 const CID_RE = /^(Qm[1-9A-HJ-NP-Za-km-z]{44,}|ba[a-z2-7]{20,})$/;
+// Subset of CID_RE that's also safe to use as a DNS label: CIDv1, lowercase
+// base32 only (Qm... CIDv0 is mixed-case base58 and can't survive as a
+// hostname component — DNS is case-insensitive/normalizes case).
+const CIDV1_RE = /^ba[a-z2-7]{20,}$/;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const resolveCache = new Map(); // domain -> {at, entry}
@@ -68,6 +85,17 @@ function parsePointer(s) {
   if ((m = s.match(/^(?:https?:\/\/[^/]+)?\/(ipfs|ipns)\/([^/?#]+)(\/[^?#]*)?/i))) return { kind:m[1].toLowerCase(), cid:m[2], base:m[3]||"" };
   if (CID_RE.test(s)) return { kind:"ipfs", cid:s, base:"" };
   return null;
+}
+
+// Build the URL used to load a site into the iframe. Prefers subdomain form
+// (https://<cid>.<kind>.<host>/base/) for real origin isolation and to avoid
+// X-Frame-Options lockouts on path-style gateway URLs; falls back to
+// path-style (https://<host>/<kind>/<cid>/base/) for CIDv0, which some
+// gateways may still block from framing.
+function gatewayUrl(kind, cid, base) {
+  const host = GATEWAY();
+  if (CIDV1_RE.test(cid)) return `https://${cid}.${kind}.${host}${base}/`;
+  return `https://${host}/${kind}/${cid}${base}/`;
 }
 
 async function jfetch(url) {
@@ -117,7 +145,7 @@ function showFrame(url) {
 // can retry through the next gateway without re-resolving KNS.
 function openSite(kind, cid, base) {
   currentSite = { kind, cid, base };
-  showFrame(`${GATEWAY()}/${kind}/${cid}${base}/`);
+  showFrame(gatewayUrl(kind, cid, base));
 }
 function retryMirror() {
   if (!currentSite) return;
@@ -206,7 +234,7 @@ async function goHome() {
     if (entry.ptr) {
       const onIt = location.hostname.includes(entry.ptr.cid);
       badge = `<span class="dot ok">&#9679;</span> <code>${esc(HOME_KAS)}</code> pulling live from IPFS`
-        + (onIt ? " &mdash; you are on the live decentralized copy" : ` &mdash; <a href="${GATEWAY()}/ipfs/${esc(entry.ptr.cid)}/">open decentralized copy</a>`);
+        + (onIt ? " &mdash; you are on the live decentralized copy" : ` &mdash; <a href="${gatewayUrl(entry.ptr.kind, entry.ptr.cid, "")}">open decentralized copy</a>`);
     } else {
       badge = `<span class="dot mid">&#9679;</span> <code>${esc(HOME_KAS)}</code> registered but no ipfs:// pointer yet`;
     }
