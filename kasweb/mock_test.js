@@ -23,6 +23,11 @@ const SITE = {
   "/style.css": ["text/css", "h1{color:teal}"],
 };
 
+// testsite.kas stands in for the home domain (WEBCLIENT_DOMAIN below);
+// othersite.kas is an ordinary third-party site, to check it is proxied
+// untouched.
+const KNS_DOMAINS = { "testsite.kas": "abc123i0", "othersite.kas": "def456i0" };
+
 // Per-gateway behaviour, keyed by the host part of the Host header.
 //   ok        serves the site
 //   redirect  302s to inbrowser.link, the way dweb.link does today
@@ -56,9 +61,10 @@ const mock = http.createServer((req, res) => {
   // KNS indexer. Reached over a plain 127.0.0.1 URL, so it answers on any host.
   let m = u.pathname.match(/^\/api\/v1\/([^/]+)\/owner$/);
   if (m) {
-    if (decodeURIComponent(m[1]) === "testsite.kas") {
+    const domain = decodeURIComponent(m[1]);
+    if (domain in KNS_DOMAINS) {
       res.writeHead(200, { "content-type": "application/json" });
-      return res.end(JSON.stringify({ success: true, data: { assetId: "abc123i0", asset: "testsite.kas", owner: "kaspa:qtest" } }));
+      return res.end(JSON.stringify({ success: true, data: { assetId: KNS_DOMAINS[domain], asset: domain, owner: "kaspa:qtest" } }));
     }
     res.writeHead(404);
     return res.end(JSON.stringify({ success: false }));
@@ -66,7 +72,7 @@ const mock = http.createServer((req, res) => {
   m = u.pathname.match(/^\/api\/v1\/domain\/([^/]+)\/profile$/);
   if (m) {
     res.writeHead(200, { "content-type": "application/json" });
-    return res.end(JSON.stringify({ success: true, data: { assetId: "abc123i0", profile: { website: "ipfs://" + CID, redirectUrl: null } } }));
+    return res.end(JSON.stringify({ success: true, data: { assetId: m[1], profile: { website: "ipfs://" + CID, redirectUrl: null } } }));
   }
 
   // Gateway requests. Subdomain form puts the CID in the hostname, path form
@@ -107,6 +113,7 @@ test.before(async () => {
   const port = mock.address().port;
   process.env.KNS_API = "http://127.0.0.1:" + port;
   process.env.KASPANET_NO_SERVER = "1";
+  process.env.WEBCLIENT_DOMAIN = "testsite.kas";
   kaspanet = require("./kaspanet.js");
   // Point every hostname at the mock, leaving the URL and Host header alone.
   kaspanet.setDnsLookup((hostname, opts, cb) => {
@@ -200,4 +207,70 @@ test("CIDv1 uses the subdomain form, CIDv0 falls back to a path", () => {
   const v0 = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
   assert.equal(kaspanet.gatewayFetchUrl(gw, "ipfs", v0, "/index.html"),
     "https://ipfs.hypha.coop/ipfs/" + v0 + "/index.html");
+});
+
+/* ------------------------------------------------- embedded marker tests */
+// The desktop client marks the web client HTML it serves so the client can
+// tell it is embedded. A hostname check cannot do this: the proxy is on
+// 127.0.0.1, and so is any static server used to serve dist-webclient in
+// development.
+
+// Drives the real proxy over a socket, so these exercise the route rather
+// than the injection helper on its own.
+function proxyGet(path) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(
+      { host: "127.0.0.1", port: kaspanet.server.address().port, path },
+      res => {
+        const chunks = [];
+        res.on("data", c => chunks.push(c));
+        res.on("end", () => resolve({
+          status: res.statusCode,
+          type: res.headers["content-type"] || "",
+          body: Buffer.concat(chunks).toString("utf8"),
+        }));
+      },
+    );
+    req.on("error", reject);
+  });
+}
+
+test("kasweb marks the web client HTML it serves", async () => {
+  kaspanet.setGateways([gwSpec(GW_OK)]);
+  await new Promise(r => kaspanet.server.listen(0, "127.0.0.1", r));
+  try {
+    const home = await proxyGet("/site/testsite.kas/");
+    assert.equal(home.status, 200);
+    assert.match(home.type, /^text\/html/);
+    assert.ok(home.body.includes(kaspanet.EMBED_MARKER), "the marker should be present");
+    assert.match(home.body, /<head[^>]*>\s*<meta name="kaspanet-embedded"/, "it belongs in the head");
+    assert.match(home.body, /Hello from testsite\.kas/, "the page itself must survive");
+
+    // A third-party .kas site is proxied byte for byte.
+    const other = await proxyGet("/site/othersite.kas/");
+    assert.equal(other.status, 200);
+    assert.ok(!other.body.includes("kaspanet-embedded"), "other sites must not be marked");
+
+    // Only HTML is touched, never assets.
+    const css = await proxyGet("/site/testsite.kas/style.css");
+    assert.equal(css.body, "h1{color:teal}");
+  } finally {
+    await new Promise(r => kaspanet.server.close(r));
+  }
+});
+
+test("markEmbedded only touches HTML, and only once", () => {
+  const html = Buffer.from("<html><head><title>x</title></head><body>hi</body></html>");
+  const marked = kaspanet.markEmbedded(html, "text/html").toString("utf8");
+  assert.ok(marked.includes(kaspanet.EMBED_MARKER));
+  assert.ok(marked.includes("<title>x</title>"), "existing head content is kept");
+  // Re-marking is a no-op, so a cached-then-reserved page cannot collect two.
+  assert.equal(kaspanet.markEmbedded(Buffer.from(marked), "text/html").toString("utf8"), marked);
+  // Non-HTML is returned untouched, as the same buffer.
+  const css = Buffer.from("h1{color:teal}");
+  assert.equal(kaspanet.markEmbedded(css, "text/css"), css);
+  assert.equal(kaspanet.markEmbedded(css, ""), css);
+  // HTML with no head still gets the marker rather than losing it.
+  assert.match(kaspanet.markEmbedded(Buffer.from("<p>bare</p>"), "text/html; charset=utf-8").toString("utf8"),
+    /^<meta name="kaspanet-embedded" content="1">\n<p>bare<\/p>$/);
 });

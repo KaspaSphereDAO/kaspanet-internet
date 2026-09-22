@@ -85,7 +85,12 @@ const resolveCache = new Map(); // domain -> {at, entry}
 
 // Running inside kaspanet.exe? Delegate navigation to the local proxy
 // (it enforces RAM-only + sealed-mode CSP, which a plain page cannot).
-const EMBEDDED = location.hostname === "127.0.0.1" || location.hostname === "localhost";
+// The desktop client marks the page it serves with this meta tag (see
+// markEmbedded() in kasweb/kaspanet.js). Sniffing the hostname instead does
+// not work: the proxy runs on 127.0.0.1, but so does any ordinary static
+// server, so serving this client locally for development used to send every
+// navigation to /go?d=..., a route only the proxy answers.
+const EMBEDDED = !!document.querySelector('meta[name="kaspanet-embedded"]');
 
 // Whatever's currently loaded in the iframe, so "try another mirror" can
 // reload the same site through the next gateway in the list.

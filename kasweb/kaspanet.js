@@ -318,6 +318,39 @@ async function fetchSiteFile(kind, cid, path) {
   throw lastErr || new Error("all gateways failed");
 }
 
+/* ------------------------------------------------------- embedded marker */
+
+// The web client needs to know when it is running inside this desktop client,
+// so it hands navigation to the local proxy (which enforces RAM-only and the
+// sealed CSP) instead of driving the iframe itself. It used to infer that
+// from the page being on 127.0.0.1, which is equally true of any ordinary
+// static server, so serving dist-webclient locally for development sent the
+// page to /go?d=... and got a 404. Mark the page explicitly instead.
+//
+// A <meta> tag is the least invasive marker available here: the client is
+// proxied as raw bytes from IPFS, and a meta tag needs no inline script, so
+// it never interacts with the sealed CSP and stays inert for anything else
+// that reads the page.
+//
+// Only the home domain's own HTML is marked. Third-party .kas sites are
+// proxied byte for byte, and the RAM cache keeps the unmodified bytes, since
+// the tag is added at serve time rather than on the way in. Browsing the web
+// client by raw CID under /ipfs/ is deliberately not marked: that is a direct
+// content view, not this client serving its own UI.
+const EMBED_MARKER = '<meta name="kaspanet-embedded" content="1">';
+
+function markEmbedded(buf, type) {
+  if (!/^text\/html\b/i.test(type || "")) return buf;
+  const html = buf.toString("utf8");
+  if (html.includes('name="kaspanet-embedded"')) return buf;
+  const head = html.match(/<head[^>]*>/i);
+  if (!head) return Buffer.from(EMBED_MARKER + "\n" + html, "utf8");
+  const at = head.index + head[0].length;
+  return Buffer.from(html.slice(0, at) + "\n" + EMBED_MARKER + html.slice(at), "utf8");
+}
+
+const isHomeDomain = d => String(d).toLowerCase() === HOME_DOMAIN.toLowerCase();
+
 /* ----------------------------------------------------------------- server */
 
 // CSP presets. Sealed: page may use its own inline scripts/styles but has NO
@@ -515,7 +548,8 @@ const server = http.createServer(async (req, res) => {
       if (entry.card)
         return send(res, 200, "text/html; charset=utf-8", knsCard(domain, entry.card, entry.owner));
       const { buf, type } = await fetchSiteFile(entry.kind, entry.cid, entry.base + rest);
-      return send(res, 200, type || "application/octet-stream", buf, { "Content-Security-Policy": siteCsp() });
+      const body = isHomeDomain(domain) ? markEmbedded(buf, type) : buf;
+      return send(res, 200, type || "application/octet-stream", body, { "Content-Security-Policy": siteCsp() });
     }
 
     // /ipfs/CID/... or /ipns/name/... — direct pointer browsing
@@ -553,6 +587,10 @@ if (!process.env.KASPANET_NO_SERVER) {
 // Exported so mock_test.js can drive the resolver and the gateway fetch path
 // against a local mock. None of this is used when the client runs normally.
 module.exports = {
+  server,
+  markEmbedded,
+  EMBED_MARKER,
+  HOME_DOMAIN,
   parseGatewaySpec,
   gatewayFetchUrl,
   fetchRaw,
