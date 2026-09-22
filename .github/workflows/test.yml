@@ -1,0 +1,36 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  kasweb:
+    name: kasweb (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # node:test needs 18 or newer. 22 is what the SEA build targets.
+        node: ["18", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # The suite is fully offline: it mocks both the KNS indexer and the
+      # IPFS gateways, so it never touches the network.
+      - run: npm test
+        working-directory: kasweb
+
+  syntax:
+    name: webclient syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # The web client has no build and no dependencies, so a parse check is
+      # what there is to run in CI.
+      - run: node --check webclient/app.js

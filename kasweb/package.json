@@ -11,6 +11,6 @@
   },
   "scripts": {
     "start": "node kaspanet.js",
-    "test": "node mock_test.js"
+    "test": "node --test mock_test.js"
   }
 }
