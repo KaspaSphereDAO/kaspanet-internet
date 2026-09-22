@@ -57,6 +57,54 @@ upload to IPFS. See `kasparty-ipfs/PUBLISH.md`.
    **Website** OR **Redirect URL** to `ipfs://<CID>`.
 3. Any Kaspanet Internet client resolves `yourname.kas` → CID → content within minutes.
 
+## Run the web client locally
+
+```
+node tools/build-dist-webclient.js
+python3 -m http.server 8080 --directory dist-webclient    # or: npx serve dist-webclient
+```
+
+Open http://localhost:8080 and enter a `.kas` name (try `rescu.kas`) or an
+`ipfs://<CID>` pointer. The mirror bar at the bottom right names the gateway
+that served the site. **Try another mirror** switches to the path-style
+fallback, where the gateway's own CSP may block the site's scripts; the bar
+says so when that mirror is in use.
+
+Opening `index.html` as a `file://` URL is not supported: the page needs a
+real origin for gateway probing and for the KNS API calls.
+
+This is the same client the desktop app serves, but not the same experience.
+The desktop client (`kasweb/`) runs a proxy on `127.0.0.1`, keeps everything
+in RAM, fetches the content itself, and applies a Content-Security-Policy per
+network mode: **sealed** (sites cannot reach the regular internet) or **open**
+(live web allowed). Served locally as static files, the page fetches from
+gateways directly and none of that applies. The client tells the two apart by
+a `kaspanet-embedded` meta tag the desktop proxy injects into the HTML it
+serves, not by the hostname.
+
+### Gateways
+
+The gateway list lives in `webclient/app.js` and `kasweb/kaspanet.js`, same
+order in both. Each entry is a host plus the URL style that host serves:
+
+| Style | URL | Notes |
+| --- | --- | --- |
+| `subdomain` | `https://<cid>.ipfs.<host>/` | One browser origin per CID. Preferred. |
+| `path` | `https://<host>/ipfs/<cid>/` | For hosts with no wildcard subdomain certificate. |
+
+Current default: `ipfs.hypha.coop` (subdomain), then `ipfs.filebase.io`
+(path). In `kasweb/` the `GATEWAYS` env var overrides it, taking bare hosts,
+comma separated, each optionally suffixed with `:path` or `:subdomain`
+(`subdomain` is the default):
+
+```
+GATEWAYS="ipfs.hypha.coop,ipfs.filebase.io:path" node kaspanet.js
+```
+
+Verify any new host against a real CID before adding it. Several public
+gateways now redirect browser traffic to a service-worker gateway, which
+cannot run inside the client's sandboxed iframe.
+
 ## Building the desktop client
 
 HOW TO LAUNCH DESKTOP CLIENT:  MAKE SURE TO DOWNLOAD WHOLE GITHUB REPO, UNZIP FILE, THEN GOTO kaspanet-internet-main -> webclient -> index.html to Run!
