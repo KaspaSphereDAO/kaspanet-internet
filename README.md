@@ -39,6 +39,12 @@ per-CID subdomain gateway for real origin isolation. This is what
 `webclient.kas` / `kaspanet.online` serves; it can also run standalone from any
 IPFS gateway link, and detects when it's embedded inside `kaspanet.exe`.
 
+**`dist-webclient/`: the web client, built for publishing**
+`webclient/` with `app.js` inlined into `index.html`, so the client works
+when pinned as a single raw file (no directory structure, so no `./app.js`
+to fetch). Regenerate with `node tools/build-dist-webclient.js` after any
+change to `webclient/`; never edit it by hand.
+
 **`kasparty-ipfs/` — example `.kas` site (Kaspanet portal)**
 A React/Vite static site retargeted for IPFS (relative paths, no backend).
 Build with `npm install && npm run build`; the `dist/` folder is what you
