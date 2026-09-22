@@ -46,64 +46,68 @@ const { execFile } = require("child_process");
 
 const KNS_API = process.env.KNS_API || "https://api.knsdomains.org/mainnet";
 
-// NOTE (Aug 25 2026): ipfs.io and dweb.link now redirect 100% of traffic to
-// a service-worker gateway (inbrowser.link) instead of serving raw bytes
-// over plain HTTP. That breaks this Node client, which needs classic HTTP
-// gateway responses, not a browser-side service worker. Default to
-// gateways that still behave as plain HTTP gateways. Raw ipfs:// pointer
-// resolution via KNS is unaffected — it's specifically the dweb.link/
-// ipfs.io *gateway hop* that broke.
-// https://discuss.ipfs.tech/t/changes-to-ipfs-io-and-dweb-link-gateways/20328
+// IPFS gateway list. Each entry is a host plus the URL style that host
+// actually serves:
+//   subdomain -> https://<cid>.ipfs.<host>/path
+//   path      -> https://<host>/ipfs/<cid>/path
+// This client fetches raw bytes and never frames or renders anything, so
+// neither style is safer here; the styles exist because a given gateway
+// only answers on one of them. The browser client (webclient/app.js) keeps
+// the same list in the same order, where the distinction does matter.
 //
-// NOTE (Sep 1 2026): list re-derived from the IPFS Foundation's own
-// public-gateway-checker registry (github.com/ipfs/public-gateway-checker)
-// after w3s.link started intermittently surfacing the same dweb.link
-// service-worker redirect (ipfs/public-gateway-checker v1.23.1 release
-// notes: "remove w3s.link (redirects to dweb.link)" — though the registry's
-// gateways.json still lists it at time of writing, so behavior may be
-// inconsistent). trustless-gateway.link is IPFS-Foundation-operated
-// (distinct from ipfs.io/dweb.link) and wasn't named in the Aug 25 2026
-// service-worker migration post, making it the most likely-stable primary
-// right now. gateway.pinata.cloud and 4everland.io are deliberately
-// excluded — both block HTML content on their public/free tiers for
-// anti-phishing reasons, so they structurally cannot serve a .kas site's
-// index.html. nftstorage.link has also been dropped: it no longer appears
-// in the maintained public-gateway-checker registry at all, consistent
-// with NFT.storage's broader 2024 service wind-down. w3s.link is kept only
-// as a last-resort rotation entry given its mixed status rather than
-// removed outright.
-// NOTE (this build): GATEWAYS is a list of bare hosts (not full https://
-// URLs) so gatewayFetchUrl() below can build a subdomain-style URL per CID,
-// mirroring the browser client (webclient/app.js) exactly. If you set the
-// GATEWAYS env var yourself, use bare hosts too, e.g.
-// "w3s.link,4everland.io" — not "https://...".
+// NOTE (Sep 22 2026): re-verified host by host with curl against a live
+// .kas site, checking status, content type, every Location header in the
+// chain, framing headers and a non-HTML subresource. Removed:
+//   w3s.link, nftstorage.link: 301/302 straight to dweb.link. Both are
+//     delisted upstream as well (ipfs/public-gateway-checker bd0fa45c22
+//     "remove w3s.link (redirects to dweb.link)", 2026-06-12, and
+//     14b730f487 "remove nftstorage.link", 2025-12-18). storacha.link,
+//     the w3s.link successor, redirects to dweb.link too.
+//   dweb.link, ipfs.io: redirect to the inbrowser.link service-worker
+//     gateway, which has no raw bytes for a backend client like this one.
+//     https://discuss.ipfs.tech/t/changes-to-ipfs-io-and-dweb-link-gateways/20328
+//   trustless-gateway.link: serves raw/CAR responses only and answers an
+//     HTML request with 406. It has no wildcard subdomain DNS either.
+// Kept, fastest first:
+//   ipfs.hypha.coop: 200 text/html, no redirects, subresources fine.
+//   ipfs.filebase.io: same, but path style only, since no TLS certificate
+//     covers <cid>.ipfs.ipfs.filebase.io.
+// Re-verify with curl before reordering. Ordering this list from gateway
+// registry docs alone has broken resolution here before.
 //
-// This exact list (order included) is confirmed working end-to-end against
-// a live .kas site as of Sep 1 2026. A later attempt to reorder this based
-// on gateway registry docs alone (trustless-gateway.link / ipfs.ecolatam.com
-// first) was NOT verified against real traffic and broke resolution in
-// practice — don't reorder this list again without testing against a real
-// CID first.
-const GATEWAYS = (process.env.GATEWAYS ||
-  "w3s.link,4everland.io,nftstorage.link,trustless-gateway.link"
-).split(",").map(s => s.trim()).filter(Boolean);
+// The GATEWAYS env var overrides the default. It takes bare hosts, comma
+// separated, each optionally suffixed with ":path" or ":subdomain" to pick
+// the style (subdomain is the default), e.g.
+//   GATEWAYS="ipfs.hypha.coop,ipfs.filebase.io:path"
+// An "http://" or "https://" prefix is accepted and sets the scheme
+// (https by default); a host may carry a port.
+const DEFAULT_GATEWAYS = "ipfs.hypha.coop,ipfs.filebase.io:path";
+
+function parseGatewaySpec(spec) {
+  let s = String(spec).trim();
+  if (!s) return null;
+  let style = "subdomain";
+  const sm = s.match(/:(path|subdomain)$/i);
+  if (sm) { style = sm[1].toLowerCase(); s = s.slice(0, -sm[0].length); }
+  let scheme = "https";
+  const pm = s.match(/^(https?):\/\//i);
+  if (pm) { scheme = pm[1].toLowerCase(); s = s.slice(pm[0].length); }
+  s = s.replace(/\/+$/, "");
+  return s ? { host: s, style, scheme } : null;
+}
+
+let GATEWAYS = (process.env.GATEWAYS || DEFAULT_GATEWAYS)
+  .split(",").map(parseGatewaySpec).filter(Boolean);
 
 // Same DNS-label-safe CIDv1 check as the browser client.
 const CIDV1_RE = /^ba[a-z2-7]{20,}$/;
 
-// Build the URL used to fetch a file from a given gateway host: subdomain
-// style (https://<cid>.<kind>.<host>/path) for CIDv1, path-style
-// (https://<host>/<kind>/<cid>/path) fallback for legacy CIDv0. Unlike the
-// browser client's identical gatewayUrl(), this isn't fixing an
-// X-Frame-Options problem — Node's https module fetches raw bytes directly
-// and never frames or renders anything, so that header is a no-op here.
-// This exists purely to keep both clients hitting gateways the same way
-// (some gateway operators serve/behave differently on subdomain vs path
-// routes), and changes nothing about the RAM-only cache, sealed CSP, or
-// no-disk-writes model below.
-function gatewayFetchUrl(host, kind, cid, path) {
-  if (CIDV1_RE.test(cid)) return `https://${cid}.${kind}.${host}${path}`;
-  return `https://${host}/${kind}/${cid}${path}`;
+// Build the URL used to fetch a file from a given gateway, honouring the
+// style that gateway serves. A "subdomain" gateway still falls back to path
+// style for CIDv0, which cannot be a DNS label.
+function gatewayFetchUrl(gw, kind, cid, path) {
+  if (gw.style === "subdomain" && CIDV1_RE.test(cid)) return `${gw.scheme}://${cid}.${kind}.${gw.host}${path}`;
+  return `${gw.scheme}://${gw.host}/${kind}/${cid}${path}`;
 }
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;   // 25 MB per file
@@ -160,6 +164,14 @@ function cacheGet(key) {
 
 /* ------------------------------------------------------------- http utils */
 
+const BANNED_REDIRECT_HOSTS = /(^|\.)(inbrowser\.link|dweb\.link|ipfs\.io)$/i;
+
+// Test seam: node's http.get accepts a custom `lookup`, so the test suite can
+// point every hostname at 127.0.0.1 without touching DNS or the URL itself
+// (the Host header still carries the gateway's real name, which is how the
+// mock tells subdomain-style requests apart). Null in normal operation.
+let dnsLookup = null;
+
 function fetchRaw(url, maxBytes, redirects) {
   redirects = redirects === undefined ? 4 : redirects;
   return new Promise((resolve, reject) => {
@@ -167,16 +179,21 @@ function fetchRaw(url, maxBytes, redirects) {
     try { u = new URL(url); } catch (e) { return reject(new Error("bad url")); }
     if (u.protocol !== "https:" && u.protocol !== "http:") return reject(new Error("bad protocol"));
     const mod = u.protocol === "https:" ? https : http;
-    const req = mod.get(u, { headers: { "User-Agent": "kaspanet/0.1", "Accept": "*/*" } }, res => {
+    const opts = { headers: { "User-Agent": "kaspanet/0.1", "Accept": "*/*" } };
+    if (dnsLookup) opts.lookup = dnsLookup;
+    const req = mod.get(u, opts, res => {
       if (res.statusCode >= 301 && res.statusCode <= 308 && res.headers.location && redirects > 0) {
         res.resume();
         let next;
         try { next = new URL(res.headers.location, u); } catch (e) { return reject(new Error("bad redirect target")); }
-        // ipfs.io/dweb.link now bounce everything to inbrowser.link's
-        // service-worker gateway — that page has no raw bytes for a
-        // backend client, so treat it as a dead gateway, not a valid hop.
-        if (/(^|\.)inbrowser\.link$/i.test(next.hostname)) {
-          return reject(new Error("gateway redirected to inbrowser.link (service-worker only, no raw bytes for backend clients)"));
+        // ipfs.io and dweb.link bounce everything to inbrowser.link's
+        // service-worker gateway, which has no raw bytes for a backend
+        // client, and the retired gateways (w3s.link, nftstorage.link,
+        // storacha.link) hop to dweb.link on the way there. Reject the
+        // whole family so a bad hop fails fast and fetchSiteFile falls
+        // through to the next gateway instead of chasing the chain.
+        if (BANNED_REDIRECT_HOSTS.test(next.hostname)) {
+          return reject(new Error("gateway redirected to " + next.hostname + " (service-worker gateway, no raw bytes for backend clients)"));
         }
         return resolve(fetchRaw(next.href, maxBytes, redirects - 1));
       }
@@ -519,10 +536,38 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(0, "127.0.0.1", () => {
-  const url = "http://127.0.0.1:" + server.address().port + "/";
-  console.log("kaspanet running at " + url + "  (RAM-only; close this window to wipe everything)");
-  const opener = process.platform === "win32" ? ["cmd", ["/c", "start", "", url]]
-    : process.platform === "darwin" ? ["open", [url]] : ["xdg-open", [url]];
-  if (!process.env.NO_OPEN) execFile(opener[0], opener[1], () => {});
-});
+// The test suite requires() this file, so the env flag keeps the server and
+// the browser launch from starting in that case. Guarding on require.main
+// instead would break the Node SEA build, where require.main is not set.
+if (!process.env.KASPANET_NO_SERVER) {
+  server.listen(0, "127.0.0.1", () => {
+    const url = "http://127.0.0.1:" + server.address().port + "/";
+    console.log("kaspanet running at " + url + "  (RAM-only; close this window to wipe everything)");
+    const opener = process.platform === "win32" ? ["cmd", ["/c", "start", "", url]]
+      : process.platform === "darwin" ? ["open", [url]] : ["xdg-open", [url]];
+    if (!process.env.NO_OPEN) execFile(opener[0], opener[1], () => {});
+  });
+}
+
+/* ------------------------------------------------------------ test seams */
+// Exported so mock_test.js can drive the resolver and the gateway fetch path
+// against a local mock. None of this is used when the client runs normally.
+module.exports = {
+  parseGatewaySpec,
+  gatewayFetchUrl,
+  fetchRaw,
+  resolveKas,
+  fetchSiteFile,
+  BANNED_REDIRECT_HOSTS,
+  setGateways(specs) {
+    GATEWAYS = specs.map(parseGatewaySpec).filter(Boolean);
+    return GATEWAYS;
+  },
+  getGateways: () => GATEWAYS,
+  setDnsLookup(fn) { dnsLookup = fn; },
+  resetCaches() {
+    fileCache.clear();
+    fileCacheBytes = 0;
+    resolveCache.clear();
+  },
+};

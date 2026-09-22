@@ -26,38 +26,45 @@
 
 const KNS_API    = "https://api.knsdomains.org/mainnet";
 
-// NOTE (Aug 25 2026): ipfs.io and dweb.link began redirecting 100% of
-// browser traffic to a service-worker gateway (inbrowser.link) instead of
-// serving content directly. Service workers can't register inside our
-// sandboxed <iframe> — intentionally, since that's what keeps a random
-// .kas site from touching this page's own origin — so sites loaded through
-// dweb.link now just hang on the inbrowser.link bootstrap screen instead of
-// rendering. Raw ipfs:// pointer resolution via KNS is unaffected; it's
-// specifically the dweb.link/ipfs.io *gateway hop* that broke.
-// Use gateways that still serve plain content, with manual fallbacks the
-// user can cycle through if one is slow/down.
-// https://discuss.ipfs.tech/t/changes-to-ipfs-io-and-dweb-link-gateways/20328
+// IPFS gateway list. Each entry is a host plus the URL style that host
+// actually serves:
+//   subdomain -> https://<cid>.ipfs.<host>/   one browser origin per CID
+//   path      -> https://<host>/ipfs/<cid>/   all sites share one origin
+// Subdomain style is preferred. It gives every site its own origin, and it
+// avoids the "X-Frame-Options: sameorigin" that several gateways send on
+// path-style URLs, which Chrome then refuses to render inside our iframe.
+// A path-style host is listed only after checking it sends no
+// X-Frame-Options and no CSP frame-ancestors, so it still frames.
 //
-// NOTE (this build): these are gateway *hosts*, not full path-style URLs.
-// gatewayUrl() below builds a subdomain-style URL per CID
-// (https://<cid>.ipfs.<host>/) instead of path-style
-// (https://<host>/ipfs/<cid>/). Path-style puts every framed site on the
-// *same* origin as the gateway itself, and several public gateways send
-// `X-Frame-Options: sameorigin` on that form as anti-clickjacking — which
-// Chrome then refuses to render inside our <iframe> at all (this is what
-// the "broken document" icon / "Refused to display ... in a frame because
-// it set 'X-Frame-Options' to 'sameorigin'" console error was). Subdomain
-// style gives each CID its own origin, so gateways generally don't lock it
-// down the same way, and it's also what actually gives us real per-site
-// origin isolation (the comment above always intended this).
-//
-// This exact list (order included) is confirmed working end-to-end against
-// a live .kas site as of Sep 1 2026: w3s.link resolves subdomain-style URLs
-// correctly for CIDv1. A later attempt to reorder this based on gateway
-// registry docs alone (trustless-gateway.link / ipfs.ecolatam.com first)
-// was NOT verified against real traffic and broke resolution in practice —
-// don't reorder this list again without testing against a real CID first.
-const GATEWAYS   = ["w3s.link", "4everland.io", "nftstorage.link", "trustless-gateway.link"];
+// NOTE (Sep 22 2026): re-verified host by host with curl against a live
+// .kas site, checking status, content type, every Location header in the
+// chain, framing headers and a non-HTML subresource. Removed:
+//   w3s.link, nftstorage.link: 301/302 straight to dweb.link. Both are
+//     delisted upstream as well (ipfs/public-gateway-checker bd0fa45c22
+//     "remove w3s.link (redirects to dweb.link)", 2026-06-12, and
+//     14b730f487 "remove nftstorage.link", 2025-12-18). storacha.link,
+//     the w3s.link successor, redirects to dweb.link too.
+//   dweb.link, ipfs.io: redirect browser traffic to the inbrowser.link
+//     service-worker gateway. Service workers cannot register inside our
+//     sandboxed iframe, which is exactly what keeps a random .kas site off
+//     this page's origin, so the site never renders.
+//     https://discuss.ipfs.tech/t/changes-to-ipfs-io-and-dweb-link-gateways/20328
+//   trustless-gateway.link: serves raw/CAR responses only and answers an
+//     HTML request with 406. It has no wildcard subdomain DNS either.
+// Kept, fastest first:
+//   ipfs.hypha.coop: 200 text/html, no redirects, no framing headers,
+//     Access-Control-Allow-Origin *, subresources fine, ~2.5s warm.
+//   ipfs.filebase.io: same, but path style only, since no TLS certificate
+//     covers <cid>.ipfs.ipfs.filebase.io. It sends a CSP with no
+//     script-src, so a framed site's own scripts may be blocked. Hence
+//     second place, and the warning the mirror bar shows for it.
+// Re-verify with curl before reordering. Ordering this list from gateway
+// registry docs alone has broken resolution here before.
+const GATEWAYS   = [
+  { host: "ipfs.hypha.coop",  style: "subdomain" },
+  { host: "ipfs.filebase.io", style: "path",
+    note: "this mirror may block the site's scripts" },
+];
 let   gwIndex    = 0;
 const GATEWAY    = () => GATEWAYS[gwIndex % GATEWAYS.length];
 
@@ -94,15 +101,14 @@ function parsePointer(s) {
   return null;
 }
 
-// Build the URL used to load a site into the iframe. Prefers subdomain form
-// (https://<cid>.<kind>.<host>/base/) for real origin isolation and to avoid
-// X-Frame-Options lockouts on path-style gateway URLs; falls back to
-// path-style (https://<host>/<kind>/<cid>/base/) for CIDv0, which some
-// gateways may still block from framing.
-function gatewayUrl(kind, cid, base) {
-  const host = GATEWAY();
-  if (CIDV1_RE.test(cid)) return `https://${cid}.${kind}.${host}${base}/`;
-  return `https://${host}/${kind}/${cid}${base}/`;
+// Build the URL used to load a site into the iframe, honouring the style
+// the given gateway actually serves (see GATEWAYS above). A "subdomain"
+// gateway still falls back to path style for CIDv0, which cannot be a DNS
+// label; such a site may then be blocked from framing by X-Frame-Options.
+function gatewayUrl(kind, cid, base, gw) {
+  gw = gw || GATEWAY();
+  if (gw.style === "subdomain" && CIDV1_RE.test(cid)) return `https://${cid}.${kind}.${gw.host}${base}/`;
+  return `https://${gw.host}/${kind}/${cid}${base}/`;
 }
 
 async function jfetch(url) {
@@ -148,15 +154,77 @@ function showFrame(url) {
   f.src = url;
   $("mirrorBar").style.display = "flex";
 }
-// Load a .kas/IPFS site into the frame, remembering it so the mirror button
-// can retry through the next gateway without re-resolving KNS.
-function openSite(kind, cid, base) {
-  currentSite = { kind, cid, base };
-  showFrame(gatewayUrl(kind, cid, base));
+
+// Mirror bar text: which gateway is actually serving, plus any warning that
+// gateway carries (filebase's CSP can block a framed site's own scripts).
+function setMirrorBar(text) {
+  $("mirrorInfo").textContent = text;
+  $("mirrorBar").style.display = "flex";
 }
+
+const PROBE_MS = 8000;
+
+// Ask a gateway for the page before pointing the iframe at it, so a gateway
+// that redirects (to a service-worker gateway, say), stalls, or answers 404
+// never reaches the frame. redirect:"manual" turns a redirect into an
+// observable opaqueredirect response instead of following it silently.
+// A cross-origin fetch the gateway does not CORS-allow rejects with the same
+// TypeError as a real network failure, and that tells us nothing about
+// whether the iframe would load, since the iframe is not bound by CORS. Those
+// come back "unknown" and are used only when nothing probes clean.
+async function probeGateway(url) {
+  try {
+    const r = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(PROBE_MS) });
+    if (r.type === "opaqueredirect") return "bad";
+    if (r.type === "opaque") return "unknown";
+    if (r.status >= 300 && r.status < 400) return "bad";
+    return r.status === 200 ? "ok" : "bad";
+  } catch (e) {
+    if (e.name === "TimeoutError" || e.name === "AbortError") return "bad";
+    return "unknown";
+  }
+}
+
+// Guards against a slow probe finishing after the user has navigated on.
+let loadToken = 0;
+
+// Load a .kas/IPFS site into the frame, remembering it so the mirror button
+// can retry through the next gateway without re-resolving KNS. Gateways are
+// probed in order from gwIndex and the first clean one serves.
+async function openSite(kind, cid, base) {
+  currentSite = { kind, cid, base };
+  const token = ++loadToken;
+  const n = GATEWAYS.length;
+  let unknown = -1;
+  setMirrorBar("Checking mirrors\u2026");
+  for (let i = 0; i < n; i++) {
+    const idx = (gwIndex + i) % n;
+    const verdict = await probeGateway(gatewayUrl(kind, cid, base, GATEWAYS[idx]));
+    if (token !== loadToken) return;
+    if (verdict === "ok") return serveFrom(idx, "ok");
+    if (verdict === "unknown" && unknown < 0) unknown = idx;
+  }
+  if (unknown >= 0) return serveFrom(unknown, "unknown");
+  showPanel(`<div class="card err"><b>No mirror could serve this site</b>
+    <p class="dim">Every IPFS gateway we know either failed, stalled or redirected.
+    The content may not be reachable on the IPFS network right now.</p>
+    <p><a href="#" data-home>&larr; home</a></p></div>`);
+}
+
+function serveFrom(idx, verdict) {
+  gwIndex = idx;
+  const gw = GATEWAYS[idx];
+  const { kind, cid, base } = currentSite;
+  showFrame(gatewayUrl(kind, cid, base, gw));
+  const bits = ["Mirror: " + gw.host];
+  if (verdict === "unknown") bits.push("unverified");
+  if (gw.note) bits.push(gw.note);
+  setMirrorBar(bits.join(" \u00b7 "));
+}
+
 function retryMirror() {
   if (!currentSite) return;
-  gwIndex++;
+  gwIndex = (gwIndex + 1) % GATEWAYS.length;
   openSite(currentSite.kind, currentSite.cid, currentSite.base);
 }
 
@@ -239,7 +307,8 @@ async function goHome() {
   try {
     const entry = await resolveKas(HOME_KAS);
     if (entry.ptr) {
-      const onIt = location.hostname.includes(entry.ptr.cid);
+      // Subdomain gateways put the CID in the hostname, path ones in the path.
+      const onIt = location.hostname.includes(entry.ptr.cid) || location.pathname.includes(entry.ptr.cid);
       badge = `<span class="dot ok">&#9679;</span> <code>${esc(HOME_KAS)}</code> pulling live from IPFS`
         + (onIt ? " &mdash; you are on the live decentralized copy" : ` &mdash; <a href="${gatewayUrl(entry.ptr.kind, entry.ptr.cid, "")}">open decentralized copy</a>`);
     } else {
