@@ -92,16 +92,10 @@ order in both. Each entry is a host plus the URL style that host serves:
 | `subdomain` | `https://<cid>.ipfs.<host>/` | One browser origin per CID. Preferred. |
 | `path` | `https://<host>/ipfs/<cid>/` | For hosts with no wildcard subdomain certificate. |
 
-A gateway may also be flagged `scriptRestricted`, meaning its own response
-headers can stop a framed site's scripts from running. `ipfs.filebase.io`
-sends a CSP with no `script-src`, so it falls back to `default-src 'self'` and
-a site's inline scripts are blocked. Such a mirror still renders sites, and
-the mirror bar says so while it is in use.
-
 Current default: `ipfs.hypha.coop` (subdomain), then `ipfs.filebase.io`
-(path, script-restricted). In `kasweb/` the `GATEWAYS` env var overrides it,
-taking bare hosts, comma separated, each optionally suffixed with `:path` or
-`:subdomain` (`subdomain` is the default):
+(path). In `kasweb/` the `GATEWAYS` env var overrides it, taking bare hosts,
+comma separated, each optionally suffixed with `:path` or `:subdomain`
+(`subdomain` is the default):
 
 ```
 GATEWAYS="ipfs.hypha.coop,ipfs.filebase.io:path" node kaspanet.js
@@ -110,31 +104,6 @@ GATEWAYS="ipfs.hypha.coop,ipfs.filebase.io:path" node kaspanet.js
 Verify any new host against a real CID before adding it. Several public
 gateways now redirect browser traffic to a service-worker gateway, which
 cannot run inside the client's sandboxed iframe.
-
-### How the web client picks a mirror
-
-All gateways are probed at once, not one after another, so one slow or hanging
-gateway no longer delays the rest. A probe is a `fetch` with
-`redirect: "manual"` and a 15 second timeout; a redirect, a timeout or any
-non-200 is a failure. A cross-origin rejection cannot be told apart from a
-network error and says nothing about whether the iframe would load, since the
-iframe is not bound by CORS, so that gateway counts as unknown.
-
-The winner is chosen in this order:
-
-1. a script-capable gateway that passes, immediately
-2. a script-restricted gateway that passes, held for up to 3 seconds
-   (`HEAD_START_MS`) in case a script-capable one is merely slower
-3. an unknown gateway, only if nothing passed
-4. otherwise a failure panel
-
-**Try another mirror** is a manual override: it switches to the next gateway
-in the list outright, without re-probing, since the race has already made its
-choice.
-
-Both constants live at the top of `webclient/app.js`. Setting
-`HEAD_START_MS` to `0` gives up the preference for script-capable mirrors and
-serves whatever answers first.
 
 ## Building the desktop client
 

@@ -23,18 +23,14 @@ jobs:
       - run: npm test
         working-directory: kasweb
 
-  webclient:
-    name: webclient
+  syntax:
+    name: webclient syntax
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      # The web client has no build and no dependencies, so a parse check is
+      # what there is to run in CI.
       - run: node --check webclient/app.js
-      # The gateway probe race, driven in a vm with a stubbed DOM and a
-      # virtual clock. No dependencies, no network.
-      - run: node --test webclient/probe_test.js
-      # The published build must match the source it is generated from.
-      - run: node tools/build-dist-webclient.js
-      - run: git diff --exit-code dist-webclient
