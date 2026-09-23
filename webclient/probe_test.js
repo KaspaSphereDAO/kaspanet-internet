@@ -107,7 +107,7 @@ function load(plan) {
       querySelector: () => null, // not embedded in the desktop client
       addEventListener() {},
     },
-    location: { hostname: "kaspanet.online", hash: "", search: "", pathname: "/" },
+    location: { hostname: "kaspanet.online", hash: "", search: "", pathname: "/", href: "https://kaspanet.online/" },
     navigator: { onLine: true },
     addEventListener() {},
     URLSearchParams,
@@ -234,4 +234,61 @@ test("probes run concurrently, not one after another", async () => {
   await open(env);
   assert.equal(seen.length, 2, "both gateways should have been probed");
   assert.ok(seen.some(u => u.includes("hypha")) && seen.some(u => u.includes("filebase")));
+});
+
+/* ----------------------------- the home page "open decentralized copy" link */
+// The link used to bake GATEWAYS[gwIndex] into its href at render time, before
+// any race had run, so on a fresh load it pointed at the first gateway whether
+// or not that gateway could serve the content. It now resolves on click.
+
+// A link element the handler can write status text into.
+const linkEl = () => ({ textContent: "open decentralized copy" });
+
+test("the copy link races on click instead of trusting the first gateway", async () => {
+  const env = load({ "hypha": { hang: true }, "filebase": { status: 200, after: 100 } });
+  const el = linkEl();
+  const done = env.ctx.openDecentralizedCopy("ipfs", CID, el);
+  await new Promise(r => setImmediate(r));
+  await env.clock.run();
+  await done;
+  assert.equal(env.ctx.location.href, FILEBASE, "it must not send you to a gateway that cannot serve it");
+});
+
+test("the copy link reuses the gateway already chosen this session", async () => {
+  const env = load({ "hypha": { hang: true }, "filebase": { status: 200, after: 100 } });
+  await open(env); // a race runs and settles on filebase
+  const before = [];
+  const orig = env.ctx.fetch;
+  env.ctx.fetch = (u, o) => { before.push(u); return orig(u, o); };
+
+  const el = linkEl();
+  env.ctx.openDecentralizedCopy("ipfs", CID, el);
+  // Deliberately does not drive the clock: reusing the chosen gateway must
+  // settle on microtasks alone. If it ever starts probing again this fails
+  // fast here instead of hanging on a race that nothing advances.
+  for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r));
+  assert.equal(env.ctx.location.href, FILEBASE, "it should navigate without waiting on a probe");
+  assert.equal(before.length, 0, "it should not re-probe when a gateway is already in use");
+});
+
+test("the copy link reports failure rather than navigating nowhere", async () => {
+  const env = load({ "hypha": { status: 500, after: 100 }, "filebase": { status: 503, after: 200 } });
+  const el = linkEl();
+  const started = env.ctx.location.href;
+  const done = env.ctx.openDecentralizedCopy("ipfs", CID, el);
+  await new Promise(r => setImmediate(r));
+  await env.clock.run();
+  await done;
+  assert.equal(env.ctx.location.href, started, "it must not navigate when nothing passed");
+  assert.match(el.textContent, /no mirror could serve it/);
+});
+
+test("the copy link prefers a script-capable gateway too", async () => {
+  const env = load({ "hypha": { status: 200, after: 2500 }, "filebase": { status: 200, after: 100 } });
+  const el = linkEl();
+  const done = env.ctx.openDecentralizedCopy("ipfs", CID, el);
+  await new Promise(r => setImmediate(r));
+  await env.clock.run();
+  await done;
+  assert.equal(env.ctx.location.href, HYPHA, "the head start applies here as well");
 });

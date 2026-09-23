@@ -132,6 +132,10 @@ The winner is chosen in this order:
 in the list outright, without re-probing, since the race has already made its
 choice.
 
+The home page's "open decentralized copy" link resolves the same way, on
+click: it reuses whatever gateway is already in use, or races if none has been
+chosen yet. No gateway is hardcoded anywhere in that path.
+
 Both constants live at the top of `webclient/app.js`. Setting
 `HEAD_START_MS` to `0` gives up the preference for script-capable mirrors and
 serves whatever answers first.

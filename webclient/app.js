@@ -78,8 +78,13 @@ const GATEWAYS   = [
   { host: "ipfs.filebase.io", style: "path", scriptRestricted: true },
 ];
 const SCRIPT_WARNING = "this mirror may block the site's scripts";
+// Which gateway is in use, and whether anything has actually chosen it yet.
+// gwChosen stays false until a race or a manual override has served
+// something, so nothing can mistake the list's first entry for a verified
+// pick. That mistake is what once made the home page's "open decentralized
+// copy" link dead on a fresh load.
 let   gwIndex    = 0;
-const GATEWAY    = () => GATEWAYS[gwIndex % GATEWAYS.length];
+let   gwChosen   = false;
 
 const HOME_KAS   = "webclient.kas";
 const CANONICAL  = "https://kaspanet.online";
@@ -124,7 +129,6 @@ function parsePointer(s) {
 // gateway still falls back to path style for CIDv0, which cannot be a DNS
 // label; such a site may then be blocked from framing by X-Frame-Options.
 function gatewayUrl(kind, cid, base, gw) {
-  gw = gw || GATEWAY();
   if (gw.style === "subdomain" && CIDV1_RE.test(cid)) return `https://${cid}.${kind}.${gw.host}${base}/`;
   return `https://${gw.host}/${kind}/${cid}${base}/`;
 }
@@ -289,6 +293,7 @@ async function openSite(kind, cid, base) {
 
 function serveFrom(idx, verdict) {
   gwIndex = idx;
+  gwChosen = true;
   const gw = GATEWAYS[idx];
   const { kind, cid, base } = currentSite;
   showFrame(gatewayUrl(kind, cid, base, gw));
@@ -296,6 +301,28 @@ function serveFrom(idx, verdict) {
   if (verdict === "unknown") bits.push("unverified");
   if (gw.scriptRestricted) bits.push(SCRIPT_WARNING);
   setMirrorBar(bits.join(" \u00b7 "));
+}
+
+// "Open decentralized copy" on the home page. The gateway is resolved when
+// the link is clicked, not when the badge is rendered. At render time no race
+// has run, so any gateway named then is a guess, and naming the first one
+// left the link dead whenever that gateway could not serve the content.
+// Reuses the gateway already in use this session if one has been chosen,
+// otherwise races them exactly as opening a site does.
+async function openDecentralizedCopy(kind, cid, el) {
+  if (!kind || !cid) return;
+  if (gwChosen) { location.href = gatewayUrl(kind, cid, "", GATEWAYS[gwIndex]); return; }
+  const label = el && el.textContent;
+  if (el) el.textContent = "finding a mirror\u2026";
+  const pick = await raceGateways(kind, cid, "");
+  if (!pick) {
+    if (el) el.textContent = "no mirror could serve it";
+    return;
+  }
+  gwIndex = pick.idx;
+  gwChosen = true;
+  if (el && label) el.textContent = label;
+  location.href = gatewayUrl(kind, cid, "", GATEWAYS[pick.idx]);
 }
 
 // Manual override. The race already picked what it judged best, so this
@@ -389,7 +416,8 @@ async function goHome() {
       // Subdomain gateways put the CID in the hostname, path ones in the path.
       const onIt = location.hostname.includes(entry.ptr.cid) || location.pathname.includes(entry.ptr.cid);
       badge = `<span class="dot ok">&#9679;</span> <code>${esc(HOME_KAS)}</code> pulling live from IPFS`
-        + (onIt ? " &mdash; you are on the live decentralized copy" : ` &mdash; <a href="${gatewayUrl(entry.ptr.kind, entry.ptr.cid, "")}">open decentralized copy</a>`);
+        + (onIt ? " &mdash; you are on the live decentralized copy"
+                : ` &mdash; <a href="#" data-copy data-kind="${esc(entry.ptr.kind)}" data-cid="${esc(entry.ptr.cid)}">open decentralized copy</a>`);
     } else {
       badge = `<span class="dot mid">&#9679;</span> <code>${esc(HOME_KAS)}</code> registered but no ipfs:// pointer yet`;
     }
@@ -427,7 +455,9 @@ addEventListener("DOMContentLoaded", () => {
   // delegated handler for "home / retry" links rendered into the result panel
   $("content").addEventListener("click", e => {
     const a = e.target.closest("a[data-home]");
-    if (a) { e.preventDefault(); goHome(); }
+    if (a) { e.preventDefault(); return void goHome(); }
+    const c = e.target.closest("a[data-copy]");
+    if (c) { e.preventDefault(); openDecentralizedCopy(c.dataset.kind, c.dataset.cid, c); }
   });
   const q = new URLSearchParams(location.search).get("q") || decodeURIComponent(location.hash.slice(1));
   if (q) go(q); else goHome();

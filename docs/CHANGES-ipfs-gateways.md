@@ -210,6 +210,23 @@ End-to-end pick time against the live gateways:
 | `webclient.kas` | 8.7s | 3.6s | 0.25s |
 | `landing.kas` | 9.4s | 3.7s | 0.21s |
 
+### The home page "open decentralized copy" link
+
+That link used to bake `GATEWAYS[gwIndex]` into its href when the badge was
+rendered, before any race had run, so on a fresh load it pointed at the first
+gateway in the list whether or not that gateway could serve the content. With
+hypha unable to retrieve anything, the link was simply dead.
+
+It now resolves on click: if a gateway has already been chosen this session,
+by a race or by a manual override, the link reuses it; otherwise it runs the
+same race and opens the winner, reporting failure in the link text if nothing
+passes. No gateway is named anywhere in that path.
+
+The implicit `GATEWAY()` default behind `gatewayUrl()` is gone too, and
+`gwChosen` now records whether anything has actually chosen a gateway, so the
+list's first entry can no longer be mistaken for a verified pick. That was the
+root of this bug.
+
 ### What this does not fix
 
 Filebase wins every race for all current content, so in practice every .kas
