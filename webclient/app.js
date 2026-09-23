@@ -51,20 +51,33 @@ const KNS_API    = "https://api.knsdomains.org/mainnet";
 //     https://discuss.ipfs.tech/t/changes-to-ipfs-io-and-dweb-link-gateways/20328
 //   trustless-gateway.link: serves raw/CAR responses only and answers an
 //     HTML request with 406. It has no wildcard subdomain DNS either.
-// Kept, fastest first:
-//   ipfs.hypha.coop: 200 text/html, no redirects, no framing headers,
-//     Access-Control-Allow-Origin *, subresources fine, ~2.5s warm.
-//   ipfs.filebase.io: same, but path style only, since no TLS certificate
-//     covers <cid>.ipfs.ipfs.filebase.io. It sends a CSP with no
-//     script-src, so a framed site's own scripts may be blocked. Hence
-//     second place, and the warning the mirror bar shows for it.
+// Kept:
+//   ipfs.hypha.coop: no redirects, no framing headers,
+//     Access-Control-Allow-Origin *, and the only script-capable host found.
+//     CORRECTION (Sep 23 2026): the "2.5s warm" figure once recorded here was
+//     hypha serving content our own probes had just warmed into its cache. It
+//     now sends zero bytes for every one of our CIDs, at 8s and at 15s alike,
+//     because they are announced almost only by Pinata over wss/https bitswap
+//     transports a conventional gateway does not dial. Kept first because it
+//     is script-capable and costs nothing now that probes race, but do not
+//     assume it works. See docs/CHANGES-ipfs-gateways.md.
+//   ipfs.filebase.io: path style only, since no TLS certificate covers
+//     <cid>.ipfs.ipfs.filebase.io. Serves our content reliably in well under
+//     a second warm, and in practice wins every race today.
 // Re-verify with curl before reordering. Ordering this list from gateway
 // registry docs alone has broken resolution here before.
+//
+// scriptRestricted marks a gateway whose own response headers can stop a
+// framed site's scripts from running. filebase sends a CSP with no
+// script-src, so it falls back to default-src 'self' and the site's inline
+// scripts are blocked. Such a gateway still renders a site and is far better
+// than nothing, but the race below prefers a script-capable one, and the
+// mirror bar says so when a restricted mirror is in use.
 const GATEWAYS   = [
   { host: "ipfs.hypha.coop",  style: "subdomain" },
-  { host: "ipfs.filebase.io", style: "path",
-    note: "this mirror may block the site's scripts" },
+  { host: "ipfs.filebase.io", style: "path", scriptRestricted: true },
 ];
+const SCRIPT_WARNING = "this mirror may block the site's scripts";
 let   gwIndex    = 0;
 const GATEWAY    = () => GATEWAYS[gwIndex % GATEWAYS.length];
 
@@ -167,7 +180,20 @@ function setMirrorBar(text) {
   $("mirrorBar").style.display = "flex";
 }
 
-const PROBE_MS = 8000;
+// Raised from 8s now that probes race in parallel: a longer timeout no
+// longer delays anything, because a gateway that answers quickly wins
+// immediately instead of waiting for the slow one to give up. Measured
+// 2026-09-23: ipfs.hypha.coop sends zero bytes for our CIDs at both 8s and
+// 15s, because they are announced almost only by Pinata over wss/https
+// bitswap transports a conventional gateway does not dial, so it cannot
+// retrieve them at all. Raising this further would not help; that is a
+// publishing problem, not a latency one. See docs/CHANGES-ipfs-gateways.md.
+const PROBE_MS = 15000;
+
+// How long to hold a script-restricted winner while a script-capable gateway
+// is still in flight. Costs this much on every load whenever the only
+// passing gateway is a restricted one, so keep it short.
+const HEAD_START_MS = 3000;
 
 // Ask a gateway for the page before pointing the iframe at it, so a gateway
 // that redirects (to a service-worker gateway, say), stalls, or answers 404
@@ -193,23 +219,68 @@ async function probeGateway(url) {
 // Guards against a slow probe finishing after the user has navigated on.
 let loadToken = 0;
 
+// Probe every gateway at once and pick a winner. Probing in order instead
+// meant waiting out the first gateway's whole timeout before even trying the
+// second, so a site the second gateway could serve in under a second took
+// the full timeout plus that second to appear, which read as a failure and
+// left people clicking "Try another mirror" by hand.
+//
+// Preference order: a script-capable gateway that passes wins outright. A
+// script-restricted one that passes is held for HEAD_START_MS first, in case
+// a script-capable gateway is merely slower, and taken when that expires or
+// when no script-capable gateway is still in flight. A gateway that only
+// failed CORS is "unknown" (see probeGateway) and is used just as a last
+// resort, since an unknown is a guess where a pass is verified.
+// Resolves {idx, verdict} or null when nothing passed.
+function raceGateways(kind, cid, base) {
+  return new Promise(resolve => {
+    let settled = false;
+    let outstanding = GATEWAYS.length;
+    let capableInFlight = GATEWAYS.filter(gw => !gw.scriptRestricted).length;
+    let restricted = null;  // first script-restricted gateway that passed
+    let unknown = null;     // first gateway we could not judge
+    let headStart = 0;
+
+    const finish = pick => {
+      if (settled) return;
+      settled = true;
+      if (headStart) clearTimeout(headStart);
+      resolve(pick);
+    };
+    // Nothing better is coming, so take what we have.
+    const settleForBest = () => finish(restricted || unknown || null);
+
+    GATEWAYS.forEach((gw, idx) => {
+      probeGateway(gatewayUrl(kind, cid, base, gw)).then(verdict => {
+        outstanding--;
+        if (!gw.scriptRestricted) capableInFlight--;
+        if (settled) return;
+
+        if (verdict === "ok") {
+          if (!gw.scriptRestricted) return finish({ idx, verdict });
+          if (!restricted) restricted = { idx, verdict };
+          // Nothing script-capable left to wait for, so stop waiting.
+          if (capableInFlight === 0) return settleForBest();
+          if (!headStart) headStart = setTimeout(settleForBest, HEAD_START_MS);
+          return;
+        }
+        if (verdict === "unknown" && !unknown) unknown = { idx, verdict };
+        // Out of probes, or holding a winner with no better hope left.
+        if (outstanding === 0 || (restricted && capableInFlight === 0)) return settleForBest();
+      });
+    });
+  });
+}
+
 // Load a .kas/IPFS site into the frame, remembering it so the mirror button
-// can retry through the next gateway without re-resolving KNS. Gateways are
-// probed in order from gwIndex and the first clean one serves.
+// can retry through another gateway without re-resolving KNS.
 async function openSite(kind, cid, base) {
   currentSite = { kind, cid, base };
   const token = ++loadToken;
-  const n = GATEWAYS.length;
-  let unknown = -1;
   setMirrorBar("Checking mirrors\u2026");
-  for (let i = 0; i < n; i++) {
-    const idx = (gwIndex + i) % n;
-    const verdict = await probeGateway(gatewayUrl(kind, cid, base, GATEWAYS[idx]));
-    if (token !== loadToken) return;
-    if (verdict === "ok") return serveFrom(idx, "ok");
-    if (verdict === "unknown" && unknown < 0) unknown = idx;
-  }
-  if (unknown >= 0) return serveFrom(unknown, "unknown");
+  const pick = await raceGateways(kind, cid, base);
+  if (token !== loadToken) return;
+  if (pick) return serveFrom(pick.idx, pick.verdict);
   showPanel(`<div class="card err"><b>No mirror could serve this site</b>
     <p class="dim">Every IPFS gateway we know either failed, stalled or redirected.
     The content may not be reachable on the IPFS network right now.</p>
@@ -223,14 +294,17 @@ function serveFrom(idx, verdict) {
   showFrame(gatewayUrl(kind, cid, base, gw));
   const bits = ["Mirror: " + gw.host];
   if (verdict === "unknown") bits.push("unverified");
-  if (gw.note) bits.push(gw.note);
+  if (gw.scriptRestricted) bits.push(SCRIPT_WARNING);
   setMirrorBar(bits.join(" \u00b7 "));
 }
 
+// Manual override. The race already picked what it judged best, so this
+// serves the next gateway outright rather than re-running the same decision
+// and landing on the same mirror.
 function retryMirror() {
   if (!currentSite) return;
-  gwIndex = (gwIndex + 1) % GATEWAYS.length;
-  openSite(currentSite.kind, currentSite.cid, currentSite.base);
+  loadToken++; // abandon any race still in flight
+  serveFrom((gwIndex + 1) % GATEWAYS.length, "manual");
 }
 
 const OFFLINE_HTML = `<div class="card err"><b><span class="dot bad">&#9679;</span> Offline</b>
