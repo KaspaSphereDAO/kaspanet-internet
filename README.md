@@ -92,13 +92,14 @@ order in both. Each entry is a host plus the URL style that host serves:
 | `subdomain` | `https://<cid>.ipfs.<host>/` | One browser origin per CID. Preferred. |
 | `path` | `https://<host>/ipfs/<cid>/` | For hosts with no wildcard subdomain certificate. |
 
-Current default: `ipfs.hypha.coop` (subdomain), then `ipfs.filebase.io`
-(path). In `kasweb/` the `GATEWAYS` env var overrides it, taking bare hosts,
-comma separated, each optionally suffixed with `:path` or `:subdomain`
-(`subdomain` is the default):
+Current default: `ipfs.filebase.io` (path), then `ipfs.hypha.coop`
+(subdomain). filebase is first because hypha currently cannot retrieve our
+content, and gateways are tried in order. In `kasweb/` the `GATEWAYS` env var
+overrides it, taking bare hosts, comma separated, each optionally suffixed
+with `:path` or `:subdomain` (`subdomain` is the default):
 
 ```
-GATEWAYS="ipfs.hypha.coop,ipfs.filebase.io:path" node kaspanet.js
+GATEWAYS="ipfs.filebase.io:path,ipfs.hypha.coop" node kaspanet.js
 ```
 
 Verify any new host against a real CID before adding it. Several public

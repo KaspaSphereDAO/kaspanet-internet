@@ -68,20 +68,24 @@ const KNS_API = process.env.KNS_API || "https://api.knsdomains.org/mainnet";
 //     https://discuss.ipfs.tech/t/changes-to-ipfs-io-and-dweb-link-gateways/20328
 //   trustless-gateway.link: serves raw/CAR responses only and answers an
 //     HTML request with 406. It has no wildcard subdomain DNS either.
-// Kept, fastest first:
-//   ipfs.hypha.coop: 200 text/html, no redirects, subresources fine.
-//   ipfs.filebase.io: same, but path style only, since no TLS certificate
-//     covers <cid>.ipfs.ipfs.filebase.io.
+// Kept, in the order tried (Sep 23 2026: filebase first, because
+// ipfs.hypha.coop returns zero bytes for our CIDs and every fetch through it
+// had to time out before the next gateway was tried):
+//   ipfs.filebase.io: 200 text/html, no redirects, subresources fine. Path
+//     style only, since no TLS certificate covers
+//     <cid>.ipfs.ipfs.filebase.io.
+//   ipfs.hypha.coop: subdomain style, but currently cannot retrieve our
+//     content at all.
 // Re-verify with curl before reordering. Ordering this list from gateway
 // registry docs alone has broken resolution here before.
 //
 // The GATEWAYS env var overrides the default. It takes bare hosts, comma
 // separated, each optionally suffixed with ":path" or ":subdomain" to pick
 // the style (subdomain is the default), e.g.
-//   GATEWAYS="ipfs.hypha.coop,ipfs.filebase.io:path"
+//   GATEWAYS="ipfs.filebase.io:path,ipfs.hypha.coop"
 // An "http://" or "https://" prefix is accepted and sets the scheme
 // (https by default); a host may carry a port.
-const DEFAULT_GATEWAYS = "ipfs.hypha.coop,ipfs.filebase.io:path";
+const DEFAULT_GATEWAYS = "ipfs.filebase.io:path,ipfs.hypha.coop";
 
 function parseGatewaySpec(spec) {
   let s = String(spec).trim();

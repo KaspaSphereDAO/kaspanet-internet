@@ -51,19 +51,23 @@ const KNS_API    = "https://api.knsdomains.org/mainnet";
 //     https://discuss.ipfs.tech/t/changes-to-ipfs-io-and-dweb-link-gateways/20328
 //   trustless-gateway.link: serves raw/CAR responses only and answers an
 //     HTML request with 406. It has no wildcard subdomain DNS either.
-// Kept, fastest first:
-//   ipfs.hypha.coop: 200 text/html, no redirects, no framing headers,
-//     Access-Control-Allow-Origin *, subresources fine, ~2.5s warm.
-//   ipfs.filebase.io: same, but path style only, since no TLS certificate
-//     covers <cid>.ipfs.ipfs.filebase.io. It sends a CSP with no
-//     script-src, so a framed site's own scripts may be blocked. Hence
-//     second place, and the warning the mirror bar shows for it.
+// Kept, in the order tried (Sep 23 2026: filebase first, because
+// ipfs.hypha.coop returns zero bytes for our CIDs, which cost a full probe
+// timeout on every load while it sat at the front of this list):
+//   ipfs.filebase.io: 200 text/html, no redirects, no framing headers,
+//     Access-Control-Allow-Origin *, subresources fine, well under a second
+//     warm. Path style only, since no TLS certificate covers
+//     <cid>.ipfs.ipfs.filebase.io. It sends a CSP with no script-src, so a
+//     framed site's own scripts may be blocked, which is what the mirror bar
+//     warns about.
+//   ipfs.hypha.coop: subdomain style and no such CSP, so it does not block a
+//     site's scripts, but it currently cannot retrieve our content at all.
 // Re-verify with curl before reordering. Ordering this list from gateway
 // registry docs alone has broken resolution here before.
 const GATEWAYS   = [
-  { host: "ipfs.hypha.coop",  style: "subdomain" },
   { host: "ipfs.filebase.io", style: "path",
     note: "this mirror may block the site's scripts" },
+  { host: "ipfs.hypha.coop",  style: "subdomain" },
 ];
 let   gwIndex    = 0;
 const GATEWAY    = () => GATEWAYS[gwIndex % GATEWAYS.length];
